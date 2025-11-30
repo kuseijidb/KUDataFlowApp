@@ -1,0 +1,122 @@
+{
+  "version": "2.0.0",
+  "options": {
+    "shell": {
+      "executable": "C:\\\\Windows\\\\System32\\\\cmd.exe",
+      "args": ["/d", "/c"]
+    }
+  },
+  "tasks": [
+    {
+      "label": "Kill Node Processes",
+      "type": "shell",
+      "windows": {
+        "command": "cmd",
+        "args": [
+          "/d",
+          "/c",
+          "taskkill /F /IM node.exe /T || echo No Node processes found"
+        ],
+        "options": {
+          "shell": {
+            "executable": "C:\\\\Windows\\\\System32\\\\cmd.exe",
+            "args": ["/d", "/c"]
+          }
+        }
+      },
+      "linux": {
+        "command": "pkill -f node || echo No Node processes found"
+      },
+      "osx": {
+        "command": "pkill -f node || echo No Node processes found"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "Clean Build Cache",
+      "type": "shell",
+      "windows": {
+        "command": "cmd /c \"rd /S /Q .next 2>nul & rd /S /Q node_modules\\.prisma 2>nul & rd /S /Q generated\\prisma 2>nul & echo Build cache cleaned\""
+      },
+      "linux": {
+        "command": "rm -rf .next node_modules/.prisma generated/prisma && echo Build cache cleaned"
+      },
+      "osx": {
+        "command": "rm -rf .next node_modules/.prisma generated/prisma && echo Build cache cleaned"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "Generate Prisma Client",
+      "type": "shell",
+      "command": "npx",
+      "args": ["prisma", "generate"],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "Start Dev Server",
+      "type": "shell",
+      "command": "cmd",
+      "args": ["/d", "/c", "npm run dev"],
+      "problemMatcher": [],
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true
+      }
+    },
+    {
+      "label": "Full Restart: Kill + Clean + Generate + Start",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "Kill Node Processes",
+        "Clean Build Cache",
+        "Generate Prisma Client",
+        "Start Dev Server"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "Quick Restart: Kill + Start",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "Kill Node Processes",
+        "Start Dev Server"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "Prisma Studio",
+      "type": "shell",
+      "command": "npx",
+      "args": ["prisma", "studio"],
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    }
+  ]
+}
