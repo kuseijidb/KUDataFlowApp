@@ -1,0 +1,50 @@
+{
+  "name": "kudataflowapp",
+  "version": "1.0.0",
+  "description": "この課題は、政党レベルの詳細データから市区町村レベルの集計データを作成し、異なる選挙回（3013回と3023回）の結果を「JISコード」をキーに横並びで比較する、という二重の処理を含んでいます。",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test": "jest"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kuseijidb/KUDataFlowApp.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/kuseijidb/KUDataFlowApp/issues"
+  },
+  "homepage": "https://github.com/kuseijidb/KUDataFlowApp#readme",
+  "dependencies": {
+    "@prisma/adapter-pg": "^7.0.1",
+    "@prisma/client": "^7.0.1",
+    "@tailwindcss/postcss": "^4.1.17",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "autoprefixer": "^10.4.22",
+    "csv-parse": "^6.1.0",
+    "dotenv": "^17.2.3",
+    "eslint": "^9.39.1",
+    "eslint-config-next": "^16.0.6",
+    "iconv-lite": "^0.7.0",
+    "next": "^16.0.6",
+    "papaparse": "^5.5.3",
+    "pg": "^8.16.3",
+    "postcss": "^8.5.6",
+    "prisma": "^7.0.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tailwindcss": "^4.1.17",
+    "typescript": "^5.9.3"
+  },
+  "devDependencies": {
+    "@types/papaparse": "^5.5.0"
+  }
+}

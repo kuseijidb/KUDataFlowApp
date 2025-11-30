@@ -1,0 +1,91 @@
+// Prisma schema for KU DataFlow App
+// Election data integration with 3 SQL-inspired patterns
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// 市区町村マスタ - JISコードをキーとする自治体情報
+model Municipality {
+  id        Int      @id @default(autoincrement())
+  jisCode   String   @unique @map("jis_code")
+  prefCode  String   @map("pref_code")
+  prefName  String   @map("pref_name")
+  cityName  String   @map("city_name")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  results     ElectionResult[]
+  rawData     RawElectionData[]
+
+  @@map("municipalities")
+}
+
+// 生の選挙データ - CSVから読み込んだ行データをそのまま保存
+model RawElectionData {
+  id             Int          @id @default(autoincrement())
+  municipality   Municipality @relation(fields: [municipalityId], references: [id])
+  municipalityId Int          @map("municipality_id")
+  electionNo     Int          @map("election_no") // 13 or 23
+  party          String       // 政党名
+  votes          Int          // 得票数
+  electorate     Int          // 有権者数
+  ballots        Int          // 投票者数
+  validVotes     Int          @map("valid_votes") // 有効投票数
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@index([electionNo])
+  @@index([municipalityId, electionNo])
+  @@map("raw_election_data")
+}
+
+// 選挙結果 - 市区町村 × 選挙回 × 政党ごとの得票データ（計算済み）
+model ElectionResult {
+  id             Int          @id @default(autoincrement())
+  municipality   Municipality @relation(fields: [municipalityId], references: [id])
+  municipalityId Int          @map("municipality_id")
+  electionNo     Int          @map("election_no") // 13 or 23
+  electorate     Int          // 有権者数
+  ballots        Int          // 投票者数
+  validVotes     Int          @map("valid_votes") // 有効投票数
+  turnout        Float        // 投票率
+  party          String       // 政党名
+  votes          Int          // 得票数
+  relativeShare  Float        @map("relative_share") // 相対得票率
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@unique([municipalityId, electionNo, party])
+  @@index([electionNo])
+  @@index([party])
+  @@map("election_results")
+}
+
+// マージ実行ログ - 各パターンの実行履歴と詳細な時間計測
+model MergeRun {
+  id         Int      @id @default(autoincrement())
+  pattern    Int      // 1, 2, or 3
+
+  // 詳細時間計測 (ミリ秒)
+  csvLoadMs         Int   @map("csv_load_ms")          // CSV読み込み
+  dbWriteRawMs      Int   @map("db_write_raw_ms")      // 生データDB書き込み
+  dbReadRawMs       Int   @map("db_read_raw_ms")       // 生データDB読み込み
+  computeMs         Int   @map("compute_ms")           // 計算処理
+  dbWriteResultMs   Int   @map("db_write_result_ms")   // 結果DB書き込み
+  dbReadResultMs    Int   @map("db_read_result_ms")    // 結果DB読み込み
+  csvWriteMs        Int   @map("csv_write_ms")         // CSV出力
+  totalMs           Int   @map("total_ms")             // 合計時間
+
+  rowCount   Int      @map("row_count")     // 出力行数
+  outputPath String   @map("output_path")   // 出力ファイルパス
+  startedAt  DateTime @default(now()) @map("started_at")
+  finishedAt DateTime @default(now()) @map("finished_at")
+  note       String?  // 検証結果やメタ情報
+
+  @@index([pattern])
+  @@map("merge_runs")
+}
