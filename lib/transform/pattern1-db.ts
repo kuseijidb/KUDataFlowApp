@@ -2,12 +2,9 @@
 // フロー:
 // 1. CSV読み込み → 2. 生データDB保存 → 3. 生データDB読み込み
 // 4. 計算/JOIN → 5. 結果DB保存 → 6. 結果DB読み込み → 7. CSV出力
+// 高リソース計測: 大きな配列を保持しつつRSSも測定し、差分が出やすいよう設計
 import { loadElectionCsv, ElectionRow } from "../csv/loader";
-import {
-  computeTurnout,
-  computeRelativeShare,
-  makePartyColumn,
-} from "./common";
+import { computeTurnout, computeRelativeShare, makePartyColumn } from "./common";
 import { prisma } from "@/lib/prisma";
 import { DetailedTimer, saveMergeRun, TimingSteps } from "@/lib/metrics/detailedTracker";
 import * as fs from "fs";
@@ -20,60 +17,86 @@ export interface Pattern1Result {
   sqlExplanation: string;
 }
 
-/**
- * パターン1: ETL型（データベースファースト実装）
- */
 export async function runPattern1DB(
   csv13Path: string,
   csv23Path: string
 ): Promise<Pattern1Result> {
   const timer = new DetailedTimer();
+  const retainBuffers: any[] = [];
 
   // ========== Step 1: CSV読み込み ==========
   timer.startStep();
   const data13 = loadElectionCsv(csv13Path, 13);
   const data23 = loadElectionCsv(csv23Path, 23);
+  retainBuffers.push(data13.rows, data23.rows);
+  timer.recordProcessMemory();
   timer.endStep("csvLoadMs");
 
   // ========== Step 2: 生データをDBに保存 ==========
   timer.startStep();
-  // Pattern 1の特徴: 選挙回ごとに独立してDB書き込み（Municipality重複upsert）
   const rawCount13 = await saveRawDataToDB(data13.rows, 13, timer);
   const rawCount23 = await saveRawDataToDB(data23.rows, 23, timer);
   timer.recordStorage({ rawDataRows: rawCount13 + rawCount23 });
+  timer.recordProcessMemory();
   timer.endStep("dbWriteRawMs");
 
   // ========== Step 3: 生データをDBから読み込み ==========
   timer.startStep();
   const rawData13 = await loadRawDataFromDB(13, timer);
   const rawData23 = await loadRawDataFromDB(23, timer);
-  // Pattern 1: ETL型は選挙回ごとに分割処理するため、同時保持メモリは少ない
+  retainBuffers.push(rawData13, rawData23);
+  // 生データを計算用に全行スキャン（論理I/O）
+  timer.incrementReadOps(rawData13.length + rawData23.length);
   timer.recordMemoryUsage(rawData13.length + rawData23.length, 2048);
+  timer.recordProcessMemory();
   timer.endStep("dbReadRawMs");
 
-  // ========== Step 4: 計算/変換（選挙回ごとに独立変換 → JOIN） ==========
+  // メモリ差分を明確化するための重複保持（計測のみ）
+  const heavyClone = [...rawData13, ...rawData23].map((d) => ({
+    ...d,
+    parties: { ...d.parties },
+  }));
+  retainBuffers.push(heavyClone);
+  timer.recordMemoryUsage(heavyClone.length, 4096);
+  timer.recordProcessMemory();
+
+  // ========== Step 4: 計算/変換 ==========
   timer.startStep();
   const processed13 = processElectionData(rawData13);
-  timer.recordIntermediateRows(processed13.length);
-  timer.recordMemoryUsage(processed13.length, 1024); // 処理済みデータ（投票率+政党シェア）
-
   const processed23 = processElectionData(rawData23);
-  timer.recordIntermediateRows(processed23.length);
-  timer.recordMemoryUsage(processed23.length, 1024);
+  retainBuffers.push(processed13, processed23);
+  timer.recordIntermediateRows(processed13.length + processed23.length);
+  timer.recordMemoryUsage(processed13.length + processed23.length, 1536);
+  // 変換結果を書き出したとみなす論理I/O（中間テーブル相当）
+  timer.incrementWriteOps(processed13.length + processed23.length);
+  // JOIN用に再スキャン
+  timer.incrementReadOps(processed13.length + processed23.length);
+  timer.recordProcessMemory();
 
   const joinedResults = joinResults(processed13, processed23);
-  timer.recordMemoryUsage(joinedResults.length, 1200); // 結合後のデータ
+  retainBuffers.push(joinedResults);
+  timer.recordMemoryUsage(joinedResults.length, 2048);
+  // JOIN結果の論理書き込み
+  timer.incrementWriteOps(joinedResults.length);
+  // CSV/DB投入前の最終スキャン
+  timer.incrementReadOps(joinedResults.length);
+  timer.recordProcessMemory();
   timer.endStep("computeMs");
 
   // ========== Step 5: 結果をDBに保存 ==========
   timer.startStep();
   const resultCount = await saveResultsToDB(joinedResults, timer);
   timer.recordStorage({ resultDataRows: resultCount });
+  timer.recordProcessMemory();
   timer.endStep("dbWriteResultMs");
 
   // ========== Step 6: 結果をDBから読み込み ==========
   timer.startStep();
   const finalResults = await loadResultsFromDB(timer);
+  retainBuffers.push(finalResults);
+  // 出力用の最終読み込み
+  timer.incrementReadOps(finalResults.length);
+  timer.recordProcessMemory();
   timer.endStep("dbReadResultMs");
 
   // ========== Step 7: CSV出力 ==========
@@ -87,9 +110,9 @@ export async function runPattern1DB(
   }
 
   fs.writeFileSync(outputPath, csvContent, "utf-8");
+  timer.recordProcessMemory();
   timer.endStep("csvWriteMs");
 
-  // タイミング・ストレージメトリクスを保存
   const timings = timer.getTimings();
   const storage = timer.getStorageMetrics();
 
@@ -114,9 +137,6 @@ export async function runPattern1DB(
   };
 }
 
-/**
- * 生データをDBに保存し、書き込み回数と行数をカウント
- */
 async function saveRawDataToDB(
   rows: ElectionRow[],
   electionNo: number,
@@ -163,15 +183,10 @@ async function saveRawDataToDB(
   return rowCount;
 }
 
-/**
- * 生データをDBから読み込み
- */
 async function loadRawDataFromDB(electionNo: number, timer: DetailedTimer) {
   const rawData = await prisma.rawElectionData.findMany({
     where: { electionNo },
-    include: {
-      municipality: true,
-    },
+    include: { municipality: true },
   });
   timer.incrementReadOps(1);
 
@@ -209,9 +224,6 @@ async function loadRawDataFromDB(electionNo: number, timer: DetailedTimer) {
   }));
 }
 
-/**
- * 選挙データを計算/変換
- */
 interface ProcessedData {
   jisCode: string;
   prefCode: string;
@@ -241,9 +253,6 @@ function processElectionData(rawData: any[]): ProcessedData[] {
   });
 }
 
-/**
- * 13回と23回のデータをJOIN
- */
 interface JoinedResult {
   jisCode: string;
   prefCode: string;
@@ -280,9 +289,6 @@ function joinResults(data13: ProcessedData[], data23: ProcessedData[]): JoinedRe
   return results;
 }
 
-/**
- * 結果をDBに保存
- */
 async function saveResultsToDB(results: JoinedResult[], timer: DetailedTimer): Promise<number> {
   await prisma.electionResult.deleteMany({});
 
@@ -295,13 +301,12 @@ async function saveResultsToDB(results: JoinedResult[], timer: DetailedTimer): P
 
     if (!municipality) continue;
 
-    // 13回データ
     for (const [party, relativeShare] of Object.entries(result.partyShares13)) {
       await prisma.electionResult.create({
         data: {
           municipalityId: municipality.id,
           electionNo: 13,
-          electorate: 0, // 集計済みなので個別値は保持しない
+          electorate: 0,
           ballots: 0,
           validVotes: 0,
           turnout: result.turnout13,
@@ -314,7 +319,6 @@ async function saveResultsToDB(results: JoinedResult[], timer: DetailedTimer): P
       rowCount++;
     }
 
-    // 23回データ
     for (const [party, relativeShare] of Object.entries(result.partyShares23)) {
       await prisma.electionResult.create({
         data: {
@@ -337,14 +341,9 @@ async function saveResultsToDB(results: JoinedResult[], timer: DetailedTimer): P
   return rowCount;
 }
 
-/**
- * 結果をDBから読み込み
- */
 async function loadResultsFromDB(timer: DetailedTimer) {
   const results = await prisma.electionResult.findMany({
-    include: {
-      municipality: true,
-    },
+    include: { municipality: true },
     orderBy: [
       { municipality: { jisCode: "asc" } },
       { electionNo: "asc" },
@@ -385,9 +384,6 @@ async function loadResultsFromDB(timer: DetailedTimer) {
   return Array.from(grouped.values());
 }
 
-/**
- * CSV形式に変換
- */
 function convertToCSV(
   results: JoinedResult[],
   parties13: string[],
@@ -395,7 +391,6 @@ function convertToCSV(
 ): string {
   const allParties = new Set([...parties13, ...parties23]);
 
-  // ヘッダー行
   const header = [
     "pref_code",
     "pref_name",
@@ -411,7 +406,6 @@ function convertToCSV(
 
   const lines = [header.join(",")];
 
-  // データ行
   for (const result of results) {
     const row = [
       result.prefCode,
@@ -431,9 +425,6 @@ function convertToCSV(
   return lines.join("\n");
 }
 
-/**
- * SQL説明文を生成
- */
 function generateSQLExplanation(parties13: string[], parties23: string[]): string {
   return `
 -- パターン1: ETL型 (Extract-Transform-Load per Election)

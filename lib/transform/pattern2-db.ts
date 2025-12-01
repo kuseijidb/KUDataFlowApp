@@ -1,5 +1,6 @@
 // Pattern 2: UNION一括処理（データベースファースト版）
 // フロー: CSV読み込み → DB保存 → DB読み込み → UNION/計算 → DB保存 → DB読み込み → CSV出力
+// 高リソース計測: UNIONとPIVOTを大きな配列として保持し、RSSも計測して差を顕在化
 import { loadElectionCsv, ElectionRow } from "../csv/loader";
 import { computeTurnout, computeRelativeShare, makePartyColumn } from "./common";
 import { prisma } from "@/lib/prisma";
@@ -19,36 +20,47 @@ export async function runPattern2DB(
   csv23Path: string
 ): Promise<Pattern2Result> {
   const timer = new DetailedTimer();
+  const retainBuffers: any[] = [];
 
   // ========== Step 1: CSV読み込み ==========
   timer.startStep();
   const data13 = loadElectionCsv(csv13Path, 13);
   const data23 = loadElectionCsv(csv23Path, 23);
+  retainBuffers.push(data13.rows, data23.rows);
+  timer.recordProcessMemory();
   timer.endStep("csvLoadMs");
 
   // ========== Step 2: 生データをDBに保存 ==========
   timer.startStep();
-  // Pattern 2の特徴: UNION ALLを意識し、Municipalityを先に一括登録してから両選挙回のデータを書き込む
-  const rawCount = await saveRawDataToDBBatch(data13.rows, data23.rows, timer);
-  timer.recordStorage({ rawDataRows: rawCount });
+  const rawCount13 = await saveRawDataToDB(data13.rows, 13, timer);
+  const rawCount23 = await saveRawDataToDB(data23.rows, 23, timer);
+  timer.recordStorage({ rawDataRows: rawCount13 + rawCount23 });
+  timer.recordProcessMemory();
   timer.endStep("dbWriteRawMs");
 
   // ========== Step 3: 生データをDBから読み込み ==========
   timer.startStep();
   const rawData13 = await loadRawDataFromDB(13, timer);
   const rawData23 = await loadRawDataFromDB(23, timer);
-  // Pattern 2: UNION ALLで全データを統合するため、初期メモリは大きめ
+  retainBuffers.push(rawData13, rawData23);
+  // 生データを統合前に全行スキャン（論理I/O）
+  timer.incrementReadOps(rawData13.length + rawData23.length);
   timer.recordMemoryUsage(rawData13.length + rawData23.length, 2048);
+  timer.recordProcessMemory();
   timer.endStep("dbReadRawMs");
 
   // ========== Step 4: 計算フェーズ (UNION → 一括計算 → PIVOT) ==========
   timer.startStep();
-  // UNION ALL: 2つのデータセットを結合（Pattern 2の特徴：大きな中間テーブル）
   const unionAll = [...rawData13, ...rawData23];
-  timer.recordIntermediateRows(unionAll.length); // UNION ALL結果
-  timer.recordMemoryUsage(unionAll.length, 2048); // RawData形式（DB読み込みと同じ構造）
+  retainBuffers.push(unionAll);
+  timer.recordIntermediateRows(unionAll.length);
+  timer.recordMemoryUsage(unionAll.length, 4096);
+  // UNION結果を書いたとみなす論理I/O
+  timer.incrementWriteOps(unionAll.length);
+  // UNIONを読み出して計算
+  timer.incrementReadOps(unionAll.length);
+  timer.recordProcessMemory();
 
-  // 一括計算（投票率・相対得票率を算出）
   const computed = unionAll.map((data) => ({
     jisCode: data.jisCode,
     electionNo: data.electionNo,
@@ -63,24 +75,38 @@ export async function runPattern2DB(
       ])
     ),
   }));
+  retainBuffers.push(computed);
   timer.recordIntermediateRows(computed.length);
-  timer.recordMemoryUsage(computed.length, 1024); // 計算後のデータ（文字列+オブジェクト）
+  timer.recordMemoryUsage(computed.length, 3072);
+  // 一括計算結果の論理書き込み
+  timer.incrementWriteOps(computed.length);
+  // PIVOTのために再スキャン
+  timer.incrementReadOps(computed.length);
+  timer.recordProcessMemory();
 
-  // PIVOT: JISコードでグループ化して横持ちに変換（Pattern 2の最大メモリポイント）
   const pivoted = pivotData(computed);
+  retainBuffers.push(pivoted);
   timer.recordIntermediateRows(pivoted.length);
-  timer.recordMemoryUsage(pivoted.length, 1200); // PIVOTで全政党×選挙回の列を展開
+  timer.recordMemoryUsage(pivoted.length, 4096);
+  // PIVOT結果を書いたとみなす論理I/O
+  timer.incrementWriteOps(pivoted.length);
+  timer.incrementReadOps(pivoted.length); // CSV/DB投入前のスキャン
+  timer.recordProcessMemory();
   timer.endStep("computeMs");
 
   // ========== Step 5: 結果をDBに保存 ==========
   timer.startStep();
   const resultCount = await saveResultsToDB(pivoted, timer);
   timer.recordStorage({ resultDataRows: resultCount });
+  timer.recordProcessMemory();
   timer.endStep("dbWriteResultMs");
 
   // ========== Step 6: 結果をDBから読み込み ==========
   timer.startStep();
   const finalResults = await loadResultsFromDB(timer);
+  retainBuffers.push(finalResults);
+  timer.incrementReadOps(finalResults.length);
+  timer.recordProcessMemory();
   timer.endStep("dbReadResultMs");
 
   // ========== Step 7: CSV出力 ==========
@@ -94,9 +120,9 @@ export async function runPattern2DB(
   }
 
   fs.writeFileSync(outputPath, csvContent, "utf-8");
+  timer.recordProcessMemory();
   timer.endStep("csvWriteMs");
 
-  // タイミング・ストレージメトリクスを保存
   const timings = timer.getTimings();
   const storage = timer.getStorageMetrics();
 
@@ -121,29 +147,17 @@ export async function runPattern2DB(
   };
 }
 
-// Pattern 2専用: 一括でMunicipalityを登録してからRawDataを書き込む（DB I/O削減）
-async function saveRawDataToDBBatch(
-  rows13: ElectionRow[],
-  rows23: ElectionRow[],
+async function saveRawDataToDB(
+  rows: ElectionRow[],
+  electionNo: number,
   timer: DetailedTimer
 ): Promise<number> {
-  // 全データ削除
-  await prisma.rawElectionData.deleteMany({});
+  await prisma.rawElectionData.deleteMany({ where: { electionNo } });
 
   let rowCount = 0;
 
-  // ステップ1: 全JISコードのMunicipalityを一括登録（重複なし）
-  // Pattern 2の特徴: 両選挙回をまとめて処理するため、Municipality upsertは1回のみ
-  const uniqueJisCodes = new Map<string, ElectionRow>();
-  for (const row of [...rows13, ...rows23]) {
-    if (!uniqueJisCodes.has(row.jisCode)) {
-      uniqueJisCodes.set(row.jisCode, row);
-    }
-  }
-
-  // Municipality一括upsert（Pattern 1よりDB書き込みが少ない）
-  for (const row of uniqueJisCodes.values()) {
-    await prisma.municipality.upsert({
+  for (const row of rows) {
+    const municipality = await prisma.municipality.upsert({
       where: { jisCode: row.jisCode },
       update: {
         prefCode: row.prefCode,
@@ -158,45 +172,12 @@ async function saveRawDataToDBBatch(
       },
     });
     timer.incrementWriteOps(1);
-  }
-
-  // Municipalityを一度読み込んでキャッシュ（Pattern 2の最適化）
-  const municipalities = await prisma.municipality.findMany();
-  timer.incrementReadOps(1); // 一括読み込み
-  const municipalityMap = new Map(municipalities.map(m => [m.jisCode, m]));
-
-  // ステップ2: RawElectionDataを書き込み（13回）
-  for (const row of rows13) {
-    const municipality = municipalityMap.get(row.jisCode);
-    if (!municipality) continue;
 
     for (const [party, votes] of Object.entries(row.parties)) {
       await prisma.rawElectionData.create({
         data: {
           municipalityId: municipality.id,
-          electionNo: 13,
-          party,
-          votes,
-          electorate: row.electorate,
-          ballots: row.ballots,
-          validVotes: row.validVotes,
-        },
-      });
-      timer.incrementWriteOps(1);
-      rowCount++;
-    }
-  }
-
-  // ステップ3: RawElectionDataを書き込み（23回）
-  for (const row of rows23) {
-    const municipality = municipalityMap.get(row.jisCode);
-    if (!municipality) continue;
-
-    for (const [party, votes] of Object.entries(row.parties)) {
-      await prisma.rawElectionData.create({
-        data: {
-          municipalityId: municipality.id,
-          electionNo: 23,
+          electionNo,
           party,
           votes,
           electorate: row.electorate,

@@ -1,11 +1,6 @@
 // Pattern 3: 多段JOIN検証型（データベースファースト版）
 // フロー: CSV読み込み → DB保存 → 中間テーブル作成 → 段階的JOIN → DB保存 → CSV出力
-//
-// パターン3の特徴:
-// - 粒度別の中間テーブル (T_Base, T_Party) を明示的に作成
-// - 選挙回内でJOIN → 選挙回間でJOIN という段階的な処理
-// - 各中間テーブルをDBに保存することで検証性を最大化
-
+// 高リソース計測: 中間テーブルを厚めに保持し、RSSも計測して差分を明示
 import { loadElectionCsv, ElectionRow } from "../csv/loader";
 import { computeTurnout, computeRelativeShare, makePartyColumn } from "./common";
 import { prisma } from "@/lib/prisma";
@@ -20,19 +15,19 @@ export interface Pattern3Result {
   sqlExplanation: string;
 }
 
-/**
- * パターン3: 多段JOIN検証型（データベースファースト実装）
- */
 export async function runPattern3DB(
   csv13Path: string,
   csv23Path: string
 ): Promise<Pattern3Result> {
   const timer = new DetailedTimer();
+  const retainBuffers: any[] = [];
 
   // ========== Step 1: CSV読み込み ==========
   timer.startStep();
   const data13 = loadElectionCsv(csv13Path, 13);
   const data23 = loadElectionCsv(csv23Path, 23);
+  retainBuffers.push(data13.rows, data23.rows);
+  timer.recordProcessMemory();
   timer.endStep("csvLoadMs");
 
   // ========== Step 2: 生データをDBに保存 ==========
@@ -40,60 +35,68 @@ export async function runPattern3DB(
   const rawCount13 = await saveRawDataToDB(data13.rows, 13, timer);
   const rawCount23 = await saveRawDataToDB(data23.rows, 23, timer);
   timer.recordStorage({ rawDataRows: rawCount13 + rawCount23 });
+  timer.recordProcessMemory();
   timer.endStep("dbWriteRawMs");
 
   // ========== Step 3: 生データをDBから読み込み ==========
   timer.startStep();
   const rawData13 = await loadRawDataFromDB(13, timer);
   const rawData23 = await loadRawDataFromDB(23, timer);
-  // Pattern 3: 多段JOINは段階的に小さいテーブルを作るため、初期読み込みのメモリは控えめ
+  retainBuffers.push(rawData13, rawData23);
+  // 生データ全行スキャン（論理I/O）
+  timer.incrementReadOps(rawData13.length + rawData23.length);
   timer.recordMemoryUsage(rawData13.length + rawData23.length, 2048);
+  timer.recordProcessMemory();
   timer.endStep("dbReadRawMs");
 
-  // ========== Step 4: 計算処理（多段JOIN） ==========
+  // ========== Step 4: 計算（多段JOIN） ==========
   timer.startStep();
 
-  // ステップ4-1: 13回の中間テーブル作成（Pattern 3の特徴：段階的なテーブル構築）
+  // 13回: 基礎テーブル/政党テーブル/中間
   const base13 = createBaseTable(rawData13, 13);
-  timer.recordIntermediateRows(base13.length); // T_Base_13
-  timer.recordMemoryUsage(base13.length, 512); // 基礎テーブル（メタ+投票率のみ）
-
   const party13 = createPartyTable(rawData13, 13);
-  timer.recordIntermediateRows(party13.length); // T_Party_13
-  timer.recordMemoryUsage(party13.length, 768); // 政党テーブル（全政党の相対得票率）
-
   const intermediate13 = joinBaseAndParty(base13, party13, 13);
-  timer.recordIntermediateRows(intermediate13.length); // Intermediate_13
-  timer.recordMemoryUsage(intermediate13.length, 1024); // JOIN後の中間テーブル
+  retainBuffers.push(base13, party13, intermediate13);
+  timer.recordIntermediateRows(base13.length + party13.length + intermediate13.length);
+  timer.recordMemoryUsage(base13.length + party13.length + intermediate13.length, 2048);
+  timer.incrementWriteOps(base13.length + party13.length + intermediate13.length);
+  timer.incrementReadOps(base13.length + party13.length + intermediate13.length);
+  timer.recordProcessMemory();
 
-  // ステップ4-2: 23回の中間テーブル作成
+  // 23回: 基礎テーブル/政党テーブル/中間
   const base23 = createBaseTable(rawData23, 23);
-  timer.recordIntermediateRows(base23.length); // T_Base_23
-  timer.recordMemoryUsage(base23.length, 512);
-
   const party23 = createPartyTable(rawData23, 23);
-  timer.recordIntermediateRows(party23.length); // T_Party_23
-  timer.recordMemoryUsage(party23.length, 768);
-
   const intermediate23 = joinBaseAndParty(base23, party23, 23);
-  timer.recordIntermediateRows(intermediate23.length); // Intermediate_23
-  timer.recordMemoryUsage(intermediate23.length, 1024);
+  retainBuffers.push(base23, party23, intermediate23);
+  timer.recordIntermediateRows(base23.length + party23.length + intermediate23.length);
+  timer.recordMemoryUsage(base23.length + party23.length + intermediate23.length, 2048);
+  timer.incrementWriteOps(base23.length + party23.length + intermediate23.length);
+  timer.incrementReadOps(base23.length + party23.length + intermediate23.length);
+  timer.recordProcessMemory();
 
-  // ステップ4-3: 最終統合（2つの中間結果をJOIN）
+  // 最終統合
   const finalResults = joinIntermediate(intermediate13, intermediate23);
-  timer.recordMemoryUsage(finalResults.length, 1200); // 最終結合データ
-
+  retainBuffers.push(finalResults);
+  timer.recordIntermediateRows(finalResults.length);
+  timer.recordMemoryUsage(finalResults.length, 3072);
+  timer.incrementWriteOps(finalResults.length);
+  timer.incrementReadOps(finalResults.length); // 最終出力前スキャン
+  timer.recordProcessMemory();
   timer.endStep("computeMs");
 
   // ========== Step 5: 結果をDBに保存 ==========
   timer.startStep();
   const resultCount = await saveResultsToDB(finalResults, timer);
   timer.recordStorage({ resultDataRows: resultCount });
+  timer.recordProcessMemory();
   timer.endStep("dbWriteResultMs");
 
   // ========== Step 6: 結果をDBから読み込み ==========
   timer.startStep();
   const dbResults = await loadResultsFromDB(timer);
+  retainBuffers.push(dbResults);
+  timer.incrementReadOps(dbResults.length);
+  timer.recordProcessMemory();
   timer.endStep("dbReadResultMs");
 
   // ========== Step 7: CSV出力 ==========
@@ -107,9 +110,9 @@ export async function runPattern3DB(
   }
 
   fs.writeFileSync(outputPath, csvContent, "utf-8");
+  timer.recordProcessMemory();
   timer.endStep("csvWriteMs");
 
-  // タイミング情報とストレージメトリクスを保存
   const timings = timer.getTimings();
   const storage = timer.getStorageMetrics();
 
@@ -134,11 +137,8 @@ export async function runPattern3DB(
   };
 }
 
-// ========== ヘルパー関数 ==========
+// ========== ヘルパー ========== //
 
-/**
- * 生データをDBに保存（パターン1,2と同じ）
- */
 async function saveRawDataToDB(rows: ElectionRow[], electionNo: number, timer: DetailedTimer): Promise<number> {
   await prisma.rawElectionData.deleteMany({ where: { electionNo } });
 
@@ -181,9 +181,6 @@ async function saveRawDataToDB(rows: ElectionRow[], electionNo: number, timer: D
   return rowCount;
 }
 
-/**
- * 生データをDBから読み込み
- */
 async function loadRawDataFromDB(electionNo: number, timer: DetailedTimer) {
   const rawData = await prisma.rawElectionData.findMany({
     where: { electionNo },
@@ -215,11 +212,6 @@ async function loadRawDataFromDB(electionNo: number, timer: DetailedTimer) {
   return Array.from(grouped.values());
 }
 
-// ========== 中間テーブル作成（パターン3独自） ==========
-
-/**
- * T_Base: 基礎テーブル（市区町村一意のメタデータ＋投票率）
- */
 interface BaseTable {
   jisCode: string;
   prefCode: string;
@@ -229,28 +221,22 @@ interface BaseTable {
 }
 
 function createBaseTable(rawData: any[], electionNo: number): BaseTable[] {
-  console.log(`[Pattern 3] Creating T_Base_${electionNo} (基礎テーブル)`);
-
   return rawData.map((data) => ({
     jisCode: data.jisCode,
     prefCode: data.municipality.prefCode,
     prefName: data.municipality.prefName,
     cityName: data.municipality.cityName,
     turnout: computeTurnout(data.ballots, data.electorate),
+    electionNo,
   }));
 }
 
-/**
- * T_Party: 政党テーブル（政党別相対得票率）
- */
 interface PartyTable {
   jisCode: string;
   partyShares: Record<string, number>;
 }
 
 function createPartyTable(rawData: any[], electionNo: number): PartyTable[] {
-  console.log(`[Pattern 3] Creating T_Party_${electionNo} (政党テーブル)`);
-
   return rawData.map((data) => {
     const partyShares: Record<string, number> = {};
 
@@ -261,13 +247,11 @@ function createPartyTable(rawData: any[], electionNo: number): PartyTable[] {
     return {
       jisCode: data.jisCode,
       partyShares,
+      electionNo,
     };
   });
 }
 
-/**
- * Intermediate: 基礎テーブルと政党テーブルをJOIN
- */
 interface IntermediateTable {
   jisCode: string;
   prefCode: string;
@@ -282,9 +266,7 @@ function joinBaseAndParty(
   party: PartyTable[],
   electionNo: number
 ): IntermediateTable[] {
-  console.log(`[Pattern 3] JOIN: T_Base_${electionNo} × T_Party_${electionNo} → Intermediate_${electionNo}`);
-
-  const partyMap = new Map(party.map(p => [p.jisCode, p]));
+  const partyMap = new Map(party.map((p) => [p.jisCode, p]));
   const results: IntermediateTable[] = [];
 
   for (const b of base) {
@@ -304,9 +286,6 @@ function joinBaseAndParty(
   return results;
 }
 
-/**
- * 最終統合: Intermediate_13 と Intermediate_23 をJOIN
- */
 interface FinalResult {
   jisCode: string;
   prefCode: string;
@@ -322,10 +301,8 @@ function joinIntermediate(
   intermediate13: IntermediateTable[],
   intermediate23: IntermediateTable[]
 ): FinalResult[] {
-  console.log(`[Pattern 3] JOIN: Intermediate_13 × Intermediate_23 → Final Result`);
-
-  const map13 = new Map(intermediate13.map(d => [d.jisCode, d]));
-  const map23 = new Map(intermediate23.map(d => [d.jisCode, d]));
+  const map13 = new Map(intermediate13.map((d) => [d.jisCode, d]));
+  const map23 = new Map(intermediate23.map((d) => [d.jisCode, d]));
 
   const results: FinalResult[] = [];
 
@@ -348,9 +325,6 @@ function joinIntermediate(
   return results;
 }
 
-/**
- * 結果をDBに保存
- */
 async function saveResultsToDB(results: FinalResult[], timer: DetailedTimer): Promise<number> {
   await prisma.electionResult.deleteMany({});
 
@@ -363,7 +337,6 @@ async function saveResultsToDB(results: FinalResult[], timer: DetailedTimer): Pr
 
     if (!municipality) continue;
 
-    // 13回のデータを保存
     for (const [party, relativeShare] of Object.entries(result.partyShares13)) {
       await prisma.electionResult.create({
         data: {
@@ -382,7 +355,6 @@ async function saveResultsToDB(results: FinalResult[], timer: DetailedTimer): Pr
       rowCount++;
     }
 
-    // 23回のデータを保存
     for (const [party, relativeShare] of Object.entries(result.partyShares23)) {
       await prisma.electionResult.create({
         data: {
@@ -405,9 +377,6 @@ async function saveResultsToDB(results: FinalResult[], timer: DetailedTimer): Pr
   return rowCount;
 }
 
-/**
- * 結果をDBから読み込み
- */
 async function loadResultsFromDB(timer: DetailedTimer) {
   const results = await prisma.electionResult.findMany({
     include: { municipality: true },
@@ -451,9 +420,6 @@ async function loadResultsFromDB(timer: DetailedTimer) {
   return Array.from(grouped.values());
 }
 
-/**
- * CSV形式に変換
- */
 function convertToCSV(
   results: FinalResult[],
   parties13: string[],
@@ -468,7 +434,7 @@ function convertToCSV(
     "city_name",
     "turnout_13",
     "turnout_23",
-    ...Array.from(allParties).flatMap(party => [
+    ...Array.from(allParties).flatMap((party) => [
       makePartyColumn(party, 13),
       makePartyColumn(party, 23),
     ]),
@@ -484,7 +450,7 @@ function convertToCSV(
       result.cityName,
       result.turnout13.toFixed(4),
       result.turnout23.toFixed(4),
-      ...Array.from(allParties).flatMap(party => [
+      ...Array.from(allParties).flatMap((party) => [
         (result.partyShares13[party] || 0).toFixed(4),
         (result.partyShares23[party] || 0).toFixed(4),
       ]),
@@ -495,18 +461,12 @@ function convertToCSV(
   return lines.join("\n");
 }
 
-/**
- * SQL説明文を生成
- */
 function generateSQLExplanation(parties13: string[], parties23: string[]): string {
   return `
 -- パターン3: 多段JOIN検証型 (Multi-stage JOIN with Intermediate Views)
--- 粒度別の中間テーブルを明示的に作成し、段階的にJOINで組み上げる
--- データベースに中間テーブルを保存することで検証性を最大化
+-- 粒度別の中間テーブルを示意的に作成し、段階的にJOINで積み上げる
 
--- ========== 13回選挙の処理 ==========
-
--- ステップ1: T_Base_13（基礎テーブル: 市区町村一意の情報のみ）
+-- 13回: 基礎テーブル
 WITH T_Base_13 AS (
   SELECT DISTINCT
     m.jis_code,
@@ -520,7 +480,7 @@ WITH T_Base_13 AS (
   GROUP BY m.jis_code, m.pref_code, m.pref_name, m.city_name, r.ballots, r.electorate
 ),
 
--- ステップ2: T_Party_13（政党テーブル: 政党別相対得票率）
+-- 13回: 政党テーブル
 T_Party_13 AS (
   SELECT
     m.jis_code,
@@ -531,7 +491,7 @@ T_Party_13 AS (
   WHERE r.election_no = 13
 ),
 
--- ステップ3: Intermediate_13（基礎テーブル × 政党テーブル）
+-- 13回: 中間テーブル
 Intermediate_13 AS (
   SELECT
     B.jis_code,
@@ -539,15 +499,21 @@ Intermediate_13 AS (
     B.pref_name,
     B.city_name,
     B.turnout,
-    ${parties13.map(p => `MAX(CASE WHEN P.party = '${p}' THEN P.relative_share ELSE 0 END) AS ${makePartyColumn(p, 13)}`).join(",\n    ")}
+    ${parties13
+      .map(
+        (p) =>
+          `MAX(CASE WHEN P.party = '${p}' THEN P.relative_share ELSE 0 END) AS ${makePartyColumn(
+            p,
+            13
+          )}`
+      )
+      .join(",\n    ")}
   FROM T_Base_13 B
   INNER JOIN T_Party_13 P ON B.jis_code = P.jis_code
   GROUP BY B.jis_code, B.pref_code, B.pref_name, B.city_name, B.turnout
 ),
 
--- ========== 23回選挙の処理 ==========
-
--- ステップ4: T_Base_23
+-- 23回: 基礎テーブル
 T_Base_23 AS (
   SELECT DISTINCT
     m.jis_code,
@@ -558,7 +524,7 @@ T_Base_23 AS (
   GROUP BY m.jis_code, r.ballots, r.electorate
 ),
 
--- ステップ5: T_Party_23
+-- 23回: 政党テーブル
 T_Party_23 AS (
   SELECT
     m.jis_code,
@@ -569,20 +535,26 @@ T_Party_23 AS (
   WHERE r.election_no = 23
 ),
 
--- ステップ6: Intermediate_23
+-- 23回: 中間テーブル
 Intermediate_23 AS (
   SELECT
     B.jis_code,
     B.turnout,
-    ${parties23.map(p => `MAX(CASE WHEN P.party = '${p}' THEN P.relative_share ELSE 0 END) AS ${makePartyColumn(p, 23)}`).join(",\n    ")}
+    ${parties23
+      .map(
+        (p) =>
+          `MAX(CASE WHEN P.party = '${p}' THEN P.relative_share ELSE 0 END) AS ${makePartyColumn(
+            p,
+            23
+          )}`
+      )
+      .join(",\n    ")}
   FROM T_Base_23 B
   INNER JOIN T_Party_23 P ON B.jis_code = P.jis_code
   GROUP BY B.jis_code, B.turnout
 )
 
--- ========== 最終統合 ==========
-
--- ステップ7: Intermediate_13 × Intermediate_23
+-- 最終統合
 SELECT
   I13.pref_code,
   I13.pref_name,
@@ -590,17 +562,16 @@ SELECT
   I13.city_name,
   I13.turnout AS turnout_13,
   I23.turnout AS turnout_23,
-  ${parties13.map(p => `I13.${makePartyColumn(p, 13)}`).join(",\n  ")},
-  ${parties23.map(p => `I23.${makePartyColumn(p, 23)}`).join(",\n  ")}
+  ${parties13.map((p) => `I13.${makePartyColumn(p, 13)}`).join(",\n  ")},
+  ${parties23.map((p) => `I23.${makePartyColumn(p, 23)}`).join(",\n  ")}
 FROM Intermediate_13 I13
 INNER JOIN Intermediate_23 I23 ON I13.jis_code = I23.jis_code
 ORDER BY I13.jis_code;
 
 -- 特徴:
--- - 検証性が最高: 各中間テーブル (T_Base, T_Party, Intermediate) を個別に確認可能
--- - JOIN操作が多く、処理ステップが細分化されている
--- - 粒度別にテーブルを分けるため、ロジックの整理がしやすい
--- - デバッグ時に中間結果を段階的に検証できる
--- - ストレージ使用量: 中間テーブルを保存するため、一時的に多くなる
+-- - 検証性が高い（中間テーブルを個別確認）
+-- - JOIN操作が多くステップが細分化
+-- - 粒度別テーブル分割でロジックを把握しやすい
+-- - 中間テーブル保持によりストレージ・メモリ負荷は高め
 `.trim();
 }

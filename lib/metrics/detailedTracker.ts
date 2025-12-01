@@ -1,6 +1,5 @@
-// Detailed Timing Tracker
-// 7段階のタイミングを個別に計測し、MergeRunへ保存
-// ストレージとデータ量の計測も含む
+// Detailed Timing & Storage Tracker
+// 7段階のタイミング計測とストレージ/メモリ/I/Oメトリクスを保存
 
 import { prisma } from "@/lib/prisma";
 
@@ -16,18 +15,18 @@ export interface TimingSteps {
 }
 
 export interface StorageMetrics {
-  rawDataRows: number;        // RawElectionDataの行数
-  resultDataRows: number;      // ElectionResultの行数
-  intermediateRows: number;    // 中間テーブルの行数（メモリ上）
-  dbWriteOps: number;          // DB書き込み回数
-  dbReadOps: number;           // DB読み込み回数
-  peakMemoryMB: number;        // ピークメモリ使用量（MB）
+  rawDataRows: number; // RawElectionDataの行数
+  resultDataRows: number; // ElectionResultの行数
+  intermediateRows: number; // 中間テーブルの行数（メモリ上も含む）
+  dbWriteOps: number; // DB書き込み回数
+  dbReadOps: number; // DB読み込み回数
+  peakMemoryMB: number; // ピークメモリ使用量（推定 or RSS実測）
 }
 
 export class DetailedTimer {
   private stepTimes: Partial<TimingSteps> = {};
-  private currentStepStart: number = 0;
-  private overallStart: number = 0;
+  private currentStepStart = 0;
+  private overallStart = 0;
 
   // ストレージメトリクス
   private storage: StorageMetrics = {
@@ -43,51 +42,33 @@ export class DetailedTimer {
     this.overallStart = performance.now();
   }
 
-  /**
-   * 新しいステップを開始
-   */
   startStep(): void {
     this.currentStepStart = performance.now();
   }
 
-  /**
-   * 現在のステップを終了し、時間を記録
-   */
   endStep(stepName: keyof TimingSteps): void {
     const elapsed = Math.round(performance.now() - this.currentStepStart);
     this.stepTimes[stepName] = elapsed;
   }
 
-  /**
-   * ストレージメトリクスを記録
-   */
   recordStorage(metrics: Partial<StorageMetrics>): void {
     this.storage = { ...this.storage, ...metrics };
   }
 
-  /**
-   * DB書き込み操作をカウント
-   */
   incrementWriteOps(count: number = 1): void {
     this.storage.dbWriteOps += count;
   }
 
-  /**
-   * DB読み込み操作をカウント
-   */
   incrementReadOps(count: number = 1): void {
     this.storage.dbReadOps += count;
   }
 
-  /**
-   * 中間テーブルの行数を記録
-   */
   recordIntermediateRows(count: number): void {
     this.storage.intermediateRows += count;
   }
 
   /**
-   * メモリ使用量を記録（概算）
+   * 概算メモリ使用量を記録（配列長×推定バイト）
    */
   recordMemoryUsage(arrayLength: number, estimatedBytesPerRow: number = 1024): void {
     const mb = (arrayLength * estimatedBytesPerRow) / (1024 * 1024);
@@ -97,8 +78,16 @@ export class DetailedTimer {
   }
 
   /**
-   * すべてのタイミングを取得（totalMsは自動計算）
+   * 実メモリ使用量（RSS）を記録
    */
+  recordProcessMemory(): void {
+    const rss = process.memoryUsage().rss;
+    const mb = Math.round((rss / (1024 * 1024)) * 100) / 100;
+    if (mb > this.storage.peakMemoryMB) {
+      this.storage.peakMemoryMB = mb;
+    }
+  }
+
   getTimings(): TimingSteps {
     const totalMs = Math.round(performance.now() - this.overallStart);
 
@@ -114,17 +103,11 @@ export class DetailedTimer {
     };
   }
 
-  /**
-   * ストレージメトリクスを取得
-   */
   getStorageMetrics(): StorageMetrics {
     return { ...this.storage };
   }
 }
 
-/**
- * MergeRun レコードを保存
- */
 export async function saveMergeRun(
   pattern: number,
   timings: TimingSteps,
@@ -147,9 +130,6 @@ export async function saveMergeRun(
   });
 }
 
-/**
- * 各パターンの最新実行結果を取得
- */
 export async function getLatestRunsByPattern() {
   const patterns = [1, 2, 3];
 

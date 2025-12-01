@@ -117,11 +117,11 @@ export default function StorageComparison() {
       <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-            Storage & I/O
+            Storage & Logical I/O
           </p>
-          <h2 className="text-2xl font-semibold text-slate-900">ストレージ・I/O比較</h2>
+          <h2 className="text-2xl font-semibold text-slate-900">ストレージ・論理I/O比較</h2>
           <p className="text-sm text-slate-600">
-            中間生成行数・DB I/O回数・推定ピークメモリを揃えた実測値。計測ロジックと同じ指標名で表示しています。
+            中間生成行数・論理I/O回数（アルゴリズム上の読み書きパス数）・推定ピークメモリを揃えた値です。
           </p>
         </div>
         <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
@@ -160,7 +160,7 @@ export default function StorageComparison() {
 
         <section className="grid gap-6 lg:grid-cols-2">
           <div className="space-y-3">
-            <h3 className="text-lg font-semibold text-slate-900">DB書き込み回数（累計）</h3>
+            <h3 className="text-lg font-semibold text-slate-900">論理書き込み回数（累計）</h3>
             <div className="space-y-2">
               {storageData.map(({ pattern, run }) => {
                 if (!run) return null;
@@ -188,7 +188,7 @@ export default function StorageComparison() {
           </div>
 
           <div className="space-y-3">
-            <h3 className="text-lg font-semibold text-slate-900">DB読み込み回数（累計）</h3>
+            <h3 className="text-lg font-semibold text-slate-900">論理読み込み回数（累計）</h3>
             <div className="space-y-2">
               {storageData.map(({ pattern, run }) => {
                 if (!run) return null;
@@ -289,10 +289,10 @@ export default function StorageComparison() {
               <strong>中間生成行数</strong>: `recordIntermediateRows`で積算した一時データの総行数。大きいほどメモリ圧と中間I/Oが増えます。
             </li>
             <li>
-              <strong>DB I/O回数</strong>: `incrementWriteOps` / `incrementReadOps`で数えた読み書き回数の累計。クエリ頻度やチャンク分割の負荷目安です。
+              <strong>論理I/O回数</strong>: `incrementWriteOps` / `incrementReadOps`で数えた、アルゴリズム上の読み書きパス回数（実DB I/Oではなく理論値）。
             </li>
             <li>
-              <strong>ピークメモリ</strong>: `recordMemoryUsage`で算出した推定最大メモリ（配列長×推定バイト）。大規模データ耐性の指標になります。
+              <strong>ピークメモリ</strong>: `recordMemoryUsage` / `recordProcessMemory`で算出した推定・実測ピーク。大規模データ耐性の指標になります。
             </li>
           </ul>
         </section>

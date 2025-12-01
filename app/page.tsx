@@ -112,17 +112,20 @@ export default function Home() {
     {
       pattern: 1,
       title: "分割ETL + 統合JOIN",
-      description: "選挙回ごとにETLし、最後にJOINで統合する堅実な設計。検証やデバッグがしやすい。",
+      description:
+        "選挙回ごとにETLし、最後にJOINで統合する堅実な設計。検証やデバッグがしやすい。",
     },
     {
       pattern: 2,
       title: "UNION一括処理",
-      description: "すべてのデータをUNIONでまとめてから一括計算。実装量を抑えつつ一気に計算するスピード型。",
+      description:
+        "すべてのデータをUNIONでまとめてから一括計算。実装量を抑えつつ一気に計算するスピード型。",
     },
     {
       pattern: 3,
       title: "多段JOIN検証型",
-      description: "中間ビューを段階的に積み上げ、JOINで磨き上げるパターン。各段で品質をチェックしやすい。",
+      description:
+        "中間ビューを段階的に積み上げ、JOINで磨き上げるパターン。各段で品質をチェックしやすい。",
     },
   ];
 
@@ -173,16 +176,20 @@ export default function Home() {
                 <MetricCard
                   label="最新の処理時間"
                   value={
-                    latestRun ? `${latestRun.durationMs} ms` : "まだ実行されていません"
+                    latestRun
+                      ? `${latestRun.durationMs} ms`
+                      : "まだ実行されていません"
                   }
-                  hint={latestRun ? new Date(latestRun.startedAt).toLocaleString("ja-JP") : "最初の実行をお試しください"}
+                  hint={
+                    latestRun
+                      ? new Date(latestRun.startedAt).toLocaleString("ja-JP")
+                      : "最初の実行をお試しください"
+                  }
                 />
                 <MetricCard
                   label="平均処理時間"
                   value={
-                    averageDuration !== null
-                      ? `${averageDuration} ms`
-                      : "—"
+                    averageDuration !== null ? `${averageDuration} ms` : "—"
                   }
                   hint={
                     totalRows !== null
@@ -210,7 +217,8 @@ export default function Home() {
                 <div className="space-y-2">
                   <p className="text-2xl font-semibold">データマージの実験場</p>
                   <p className="text-sm text-slate-300">
-                    実行 → 計測 → 可視化を最短距離で回すためのダッシュボード。ストレージやI/Oのボトルネックを即座に把握できます。
+                    実行 → 計測 →
+                    可視化を最短距離で回すためのダッシュボード。ストレージやI/Oのボトルネックを即座に把握できます。
                   </p>
                 </div>
                 <ul className="space-y-2 text-sm text-slate-200">
@@ -228,7 +236,9 @@ export default function Home() {
                   </li>
                 </ul>
                 <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-200">
-                  {isExecuting ? "処理中... 完了するまでお待ちください。" : "任意のパターンを選んで実行できます。"}
+                  {isExecuting
+                    ? "処理中... 完了するまでお待ちください。"
+                    : "任意のパターンを選んで実行できます。"}
                 </div>
               </div>
             </div>
@@ -275,13 +285,13 @@ export default function Home() {
         <section className="space-y-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-white-500">
                 SQL Patterns
               </p>
-              <h2 className="text-2xl font-semibold text-slate-900">
+              <h2 className="text-2xl font-semibold text-white-900">
                 パターンを選んで実行する
               </h2>
-              <p className="text-sm text-slate-600">
+              <p className="text-sm text-white-600">
                 アルゴリズムの違いをその場で比較。気になるパターンを実行してタイミングとI/Oをチェックしましょう。
               </p>
             </div>
@@ -319,7 +329,9 @@ export default function Home() {
                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
                   History
                 </p>
-                <h2 className="text-2xl font-semibold text-slate-900">実行履歴</h2>
+                <h2 className="text-2xl font-semibold text-slate-900">
+                  実行履歴
+                </h2>
               </div>
               <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
                 {history.length} runs
