@@ -1,19 +1,29 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --background: #f7f9fb;
+  --foreground: #0f172a;
 }
 
 body {
   color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+  background: radial-gradient(circle at 15% 20%, #e0f2fe 0, rgba(224, 242, 254, 0) 28%),
+    radial-gradient(circle at 90% 10%, #e4d9ff 0, rgba(228, 217, 255, 0) 26%),
+    radial-gradient(circle at 70% 70%, #d1fae5 0, rgba(209, 250, 229, 0) 32%),
+    #f8fafc;
+  font-family: var(--font-body), "Space Grotesk", "Noto Sans JP", system-ui, -apple-system, sans-serif;
+  min-height: 100vh;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-display), var(--font-body), "Space Grotesk", "Noto Sans JP", system-ui, -apple-system, sans-serif;
+  letter-spacing: -0.01em;
+}
+
+*::selection {
+  background: #dbeafe;
+  color: #0f172a;
 }

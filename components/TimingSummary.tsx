@@ -1,8 +1,5 @@
 "use client";
 
-// タイミングサマリ表示コンポーネント
-// 3パターンの詳細タイミングを常時表示
-
 import { useEffect, useState } from "react";
 
 interface TimingData {
@@ -47,7 +44,6 @@ export default function TimingSummary() {
   ]);
   const [loading, setLoading] = useState(true);
 
-  // タイミングデータを取得
   const fetchTimings = async () => {
     try {
       const response = await fetch("/api/timings");
@@ -65,8 +61,6 @@ export default function TimingSummary() {
 
   useEffect(() => {
     fetchTimings();
-
-    // 10秒ごとに自動更新（実行後すぐに反映されるように）
     const interval = setInterval(fetchTimings, 10000);
     return () => clearInterval(interval);
   }, []);
@@ -74,7 +68,7 @@ export default function TimingSummary() {
   const getPatternName = (pattern: number) => {
     switch (pattern) {
       case 1:
-        return "パターン1: ETL分離型";
+        return "パターン1: 分割ETL + 統合JOIN";
       case 2:
         return "パターン2: UNION一括処理";
       case 3:
@@ -86,120 +80,151 @@ export default function TimingSummary() {
 
   if (loading) {
     return (
-      <div className="mt-8 p-4 bg-gray-100 dark:bg-gray-800 rounded-lg">
-        <p className="text-center text-gray-600 dark:text-gray-400">
-          タイミングデータを読み込み中...
-        </p>
+      <div className="rounded-3xl border border-slate-200/80 bg-white/70 p-6 shadow-sm backdrop-blur">
+        <p className="text-center text-slate-600">タイミングデータを読み込み中...</p>
       </div>
     );
   }
 
   return (
-    <div className="mt-8 space-y-4">
-      <h2 className="text-2xl font-bold mb-4">実行タイミングサマリ</h2>
+    <div className="rounded-3xl border border-slate-200/80 bg-white/80 shadow-xl backdrop-blur">
+      <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+            Performance
+          </p>
+          <h2 className="text-2xl font-semibold text-slate-900">実行タイミング</h2>
+          <p className="text-sm text-slate-600">
+            各パターンの最新実行時間を段階ごとにチェックできます（10秒毎に自動更新）。
+          </p>
+        </div>
+        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+          Live 10s refresh
+        </span>
+      </div>
 
-      {timingData.map(({ pattern, run }) => (
-        <div
-          key={pattern}
-          className="p-6 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-sm"
-        >
-          <h3 className="text-lg font-semibold mb-4 text-blue-600 dark:text-blue-400">
-            {getPatternName(pattern)}
-          </h3>
-
-          {run ? (
-            <>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded">
-                  <p className="text-xs text-gray-600 dark:text-gray-400">
-                    CSV読み込み
-                  </p>
-                  <p className="text-lg font-bold">{run.csvLoadMs}ms</p>
-                </div>
-
-                <div className="p-3 bg-green-50 dark:bg-green-900/20 rounded">
-                  <p className="text-xs text-gray-600 dark:text-gray-400">
-                    DB書き込み（生）
-                  </p>
-                  <p className="text-lg font-bold">{run.dbWriteRawMs}ms</p>
-                </div>
-
-                <div className="p-3 bg-yellow-50 dark:bg-yellow-900/20 rounded">
-                  <p className="text-xs text-gray-600 dark:text-gray-400">
-                    DB読み込み（生）
-                  </p>
-                  <p className="text-lg font-bold">{run.dbReadRawMs}ms</p>
-                </div>
-
-                <div className="p-3 bg-purple-50 dark:bg-purple-900/20 rounded">
-                  <p className="text-xs text-gray-600 dark:text-gray-400">
-                    計算処理
-                  </p>
-                  <p className="text-lg font-bold">{run.computeMs}ms</p>
-                </div>
-
-                <div className="p-3 bg-pink-50 dark:bg-pink-900/20 rounded">
-                  <p className="text-xs text-gray-600 dark:text-gray-400">
-                    DB書き込み（結果）
-                  </p>
-                  <p className="text-lg font-bold">{run.dbWriteResultMs}ms</p>
-                </div>
-
-                <div className="p-3 bg-indigo-50 dark:bg-indigo-900/20 rounded">
-                  <p className="text-xs text-gray-600 dark:text-gray-400">
-                    DB読み込み（結果）
-                  </p>
-                  <p className="text-lg font-bold">{run.dbReadResultMs}ms</p>
-                </div>
-
-                <div className="p-3 bg-orange-50 dark:bg-orange-900/20 rounded">
-                  <p className="text-xs text-gray-600 dark:text-gray-400">
-                    CSV出力
-                  </p>
-                  <p className="text-lg font-bold">{run.csvWriteMs}ms</p>
-                </div>
-
-                <div className="p-3 bg-red-50 dark:bg-red-900/20 rounded">
-                  <p className="text-xs text-gray-600 dark:text-gray-400">
-                    合計時間
-                  </p>
-                  <p className="text-lg font-bold text-red-600 dark:text-red-400">
-                    {run.totalMs}ms
-                  </p>
-                </div>
+      <div className="space-y-4 p-6">
+        {timingData.map(({ pattern, run }) => (
+          <div
+            key={pattern}
+            className="rounded-2xl border border-slate-200 bg-white/90 p-5 shadow-sm"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <span className="h-3 w-3 rounded-full bg-emerald-500" />
+                <p className="text-lg font-semibold text-slate-900">
+                  {getPatternName(pattern)}
+                </p>
               </div>
+              {run ? (
+                <span className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
+                  最終更新 {new Date(run.finishedAt).toLocaleString("ja-JP")}
+                </span>
+              ) : null}
+            </div>
 
-              <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
-                <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div>
-                    <span className="text-gray-600 dark:text-gray-400">
-                      出力行数:
-                    </span>{" "}
-                    <span className="font-semibold">{run.rowCount}</span>
-                  </div>
-                  <div>
-                    <span className="text-gray-600 dark:text-gray-400">
-                      実行時刻:
-                    </span>{" "}
-                    <span className="font-semibold">
-                      {new Date(run.finishedAt).toLocaleString("ja-JP")}
-                    </span>
-                  </div>
+            {run ? (
+              <>
+                <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+                  <TimingStat label="CSV読み込み" value={`${run.csvLoadMs} ms`} tone="sky" />
+                  <TimingStat
+                    label="DB書き込み（生データ）"
+                    value={`${run.dbWriteRawMs} ms`}
+                    tone="emerald"
+                  />
+                  <TimingStat
+                    label="DB読み込み（生データ）"
+                    value={`${run.dbReadRawMs} ms`}
+                    tone="amber"
+                  />
+                  <TimingStat label="計算フェーズ" value={`${run.computeMs} ms`} tone="violet" />
+                  <TimingStat
+                    label="DB書き込み（結果）"
+                    value={`${run.dbWriteResultMs} ms`}
+                    tone="pink"
+                  />
+                  <TimingStat
+                    label="DB読み込み（結果）"
+                    value={`${run.dbReadResultMs} ms`}
+                    tone="indigo"
+                  />
+                  <TimingStat label="CSV出力" value={`${run.csvWriteMs} ms`} tone="orange" />
+                  <TimingStat
+                    label="合計時間"
+                    value={`${run.totalMs} ms`}
+                    tone="rose"
+                    highlight
+                  />
+                </div>
+
+                <div className="mt-4 flex flex-wrap items-center gap-4 text-sm text-slate-600">
+                  <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1">
+                    <span className="h-2 w-2 rounded-full bg-indigo-400" />
+                    出力行数: {run.rowCount.toLocaleString()} 行
+                  </span>
+                  <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1">
+                    <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                    合計時間: {run.totalMs} ms
+                  </span>
                 </div>
                 {run.note && (
-                  <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                  <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm text-slate-600">
                     {run.note}
                   </div>
                 )}
-              </div>
-            </>
-          ) : (
-            <p className="text-gray-500 dark:text-gray-400 italic">
-              まだ実行されていません
-            </p>
-          )}
-        </div>
-      ))}
+              </>
+            ) : (
+              <p className="mt-3 text-sm text-slate-500">まだ実行されていません。</p>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+type Tone =
+  | "sky"
+  | "emerald"
+  | "amber"
+  | "violet"
+  | "pink"
+  | "indigo"
+  | "orange"
+  | "rose";
+
+function TimingStat({
+  label,
+  value,
+  tone,
+  highlight,
+}: {
+  label: string;
+  value: string;
+  tone: Tone;
+  highlight?: boolean;
+}) {
+  const toneMap: Record<Tone, string> = {
+    sky: "bg-sky-50 text-sky-800",
+    emerald: "bg-emerald-50 text-emerald-800",
+    amber: "bg-amber-50 text-amber-800",
+    violet: "bg-violet-50 text-violet-800",
+    pink: "bg-pink-50 text-pink-800",
+    indigo: "bg-indigo-50 text-indigo-800",
+    orange: "bg-orange-50 text-orange-800",
+    rose: "bg-rose-50 text-rose-800",
+  };
+
+  return (
+    <div
+      className={`rounded-xl border border-slate-100 px-4 py-3 ${toneMap[tone]} ${
+        highlight ? "shadow-sm ring-1 ring-rose-200/80" : ""
+      }`}
+    >
+      <p className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-600">
+        {label}
+      </p>
+      <p className="text-lg font-semibold">{value}</p>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 // Detailed Timing Tracker
 // 7段階のタイミングを個別に計測し、MergeRunへ保存
+// ストレージとデータ量の計測も含む
 
 import { prisma } from "@/lib/prisma";
 
@@ -14,10 +15,29 @@ export interface TimingSteps {
   totalMs: number;
 }
 
+export interface StorageMetrics {
+  rawDataRows: number;        // RawElectionDataの行数
+  resultDataRows: number;      // ElectionResultの行数
+  intermediateRows: number;    // 中間テーブルの行数（メモリ上）
+  dbWriteOps: number;          // DB書き込み回数
+  dbReadOps: number;           // DB読み込み回数
+  peakMemoryMB: number;        // ピークメモリ使用量（MB）
+}
+
 export class DetailedTimer {
   private stepTimes: Partial<TimingSteps> = {};
   private currentStepStart: number = 0;
   private overallStart: number = 0;
+
+  // ストレージメトリクス
+  private storage: StorageMetrics = {
+    rawDataRows: 0,
+    resultDataRows: 0,
+    intermediateRows: 0,
+    dbWriteOps: 0,
+    dbReadOps: 0,
+    peakMemoryMB: 0,
+  };
 
   constructor() {
     this.overallStart = performance.now();
@@ -39,6 +59,44 @@ export class DetailedTimer {
   }
 
   /**
+   * ストレージメトリクスを記録
+   */
+  recordStorage(metrics: Partial<StorageMetrics>): void {
+    this.storage = { ...this.storage, ...metrics };
+  }
+
+  /**
+   * DB書き込み操作をカウント
+   */
+  incrementWriteOps(count: number = 1): void {
+    this.storage.dbWriteOps += count;
+  }
+
+  /**
+   * DB読み込み操作をカウント
+   */
+  incrementReadOps(count: number = 1): void {
+    this.storage.dbReadOps += count;
+  }
+
+  /**
+   * 中間テーブルの行数を記録
+   */
+  recordIntermediateRows(count: number): void {
+    this.storage.intermediateRows += count;
+  }
+
+  /**
+   * メモリ使用量を記録（概算）
+   */
+  recordMemoryUsage(arrayLength: number, estimatedBytesPerRow: number = 1024): void {
+    const mb = (arrayLength * estimatedBytesPerRow) / (1024 * 1024);
+    if (mb > this.storage.peakMemoryMB) {
+      this.storage.peakMemoryMB = Math.round(mb * 100) / 100;
+    }
+  }
+
+  /**
    * すべてのタイミングを取得（totalMsは自動計算）
    */
   getTimings(): TimingSteps {
@@ -55,6 +113,13 @@ export class DetailedTimer {
       totalMs,
     };
   }
+
+  /**
+   * ストレージメトリクスを取得
+   */
+  getStorageMetrics(): StorageMetrics {
+    return { ...this.storage };
+  }
 }
 
 /**
@@ -63,6 +128,7 @@ export class DetailedTimer {
 export async function saveMergeRun(
   pattern: number,
   timings: TimingSteps,
+  storage: StorageMetrics,
   rowCount: number,
   outputPath: string,
   note?: string
@@ -71,6 +137,7 @@ export async function saveMergeRun(
     data: {
       pattern,
       ...timings,
+      ...storage,
       rowCount,
       outputPath,
       note,

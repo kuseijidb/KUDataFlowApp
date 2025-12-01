@@ -80,6 +80,14 @@ model MergeRun {
   csvWriteMs        Int   @map("csv_write_ms")         // CSV出力
   totalMs           Int   @map("total_ms")             // 合計時間
 
+  // ストレージとデータ量の計測
+  rawDataRows       Int   @map("raw_data_rows")        // RawElectionDataの行数
+  resultDataRows    Int   @map("result_data_rows")     // ElectionResultの行数
+  intermediateRows  Int   @map("intermediate_rows")    // 中間テーブルの行数（メモリ上）
+  dbWriteOps        Int   @map("db_write_ops")         // DB書き込み回数
+  dbReadOps         Int   @map("db_read_ops")          // DB読み込み回数
+  peakMemoryMB      Float @default(0) @map("peak_memory_mb") // ピークメモリ使用量（MB）
+
   rowCount   Int      @map("row_count")     // 出力行数
   outputPath String   @map("output_path")   // 出力ファイルパス
   startedAt  DateTime @default(now()) @map("started_at")
